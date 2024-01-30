@@ -162,7 +162,7 @@ class Metadata(MutableMapping):
         ('title', 22),
         ('artist', 6),
         ('album', 12),
-        ('tracknumber', 6),
+        ('tracknumber', 12),
         ('totaltracks', 5),
         ('discnumber', 5),
         ('totaldiscs', 4),
@@ -349,7 +349,10 @@ class Metadata(MutableMapping):
 
         return parts
 
-    def compare_to_track(self, track, weights):
+    def compare_to_track(self, track, weights, file=None):
+        from picard.cluster import AnalyzingCluster
+        from picard.cluster import AnalyzingClusterManager
+        cluster: AnalyzingCluster = AnalyzingClusterManager.get_cluster(file)
         parts = []
         releases = []
 
@@ -389,9 +392,12 @@ class Metadata(MutableMapping):
         for release in releases:
             release_parts = self.compare_to_release_parts(release, weights)
             sim = linear_combination_of_weights(parts + release_parts) * search_score
+            rg = release['release-group'] if "release-group" in release else None
+            temp = SimMatchTrack(similarity=sim, releasegroup=rg, release=release, track=track)
+            if cluster is not None and sim != -1:
+                cluster.cache(file, temp)
             if sim > result.similarity:
-                rg = release['release-group'] if "release-group" in release else None
-                result = SimMatchTrack(similarity=sim, releasegroup=rg, release=release, track=track)
+                result = temp
         return result
 
     def copy(self, other, copy_images=True):

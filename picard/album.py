@@ -83,7 +83,7 @@ from picard.track import Track
 from picard.util import (
     find_best_match,
     format_time,
-    mbid_validate,
+    mbid_validate, BestMatch,
 )
 from picard.util.imagelist import (
     add_metadata_images,
@@ -703,9 +703,13 @@ class Album(DataObject, Item):
                                 or tracks_cache[(mbid, )])
                         if track:
                             similarity = track.metadata.length_score(track.metadata.length, file.metadata.length)
+                            if track.tracknumber != file.tracknumber:
+                                similarity = similarity / 2
                             yield SimMatchAlbum(similarity=similarity, track=track)
 
             best_match = find_best_match(mbid_candidates(), no_match)
+            if best_match.similarity < 0.5:
+                best_match = BestMatch(similarity=best_match.similarity, result=no_match)
             if best_match.result != no_match:
                 yield (file, best_match.result.track)
                 continue

@@ -841,37 +841,50 @@ class File(QtCore.QObject, Item):
                 timeout=3000
             )
 
+        from picard.cluster import AnalyzingCluster
+        from picard.cluster import AnalyzingClusterManager
+        cluster: AnalyzingCluster = AnalyzingClusterManager.get_cluster(self)
+        if cluster is not None:
+            cluster.decrement()
+
         if tracks:
             if lookuptype == File.LOOKUP_ACOUSTID:
                 threshold = 0
             else:
                 config = get_config()
                 threshold = config.setting['file_lookup_threshold']
-
             trackmatch = self._match_to_track(tracks, threshold=threshold)
-            if trackmatch is None:
-                statusbar(N_("No matching tracks above the threshold for file '%(filename)s'"))
+            if cluster is None:
+                self.process_trackmatch(lookuptype, trackmatch)
             else:
-                statusbar(N_("File '%(filename)s' identified!"))
-                (recording_id, release_group_id, release_id, acoustid, node) = trackmatch
-                if lookuptype == File.LOOKUP_ACOUSTID:
-                    self.metadata['acoustid_id'] = acoustid
-                    self.tagger.acoustidmanager.add(self, recording_id)
-                if release_group_id is not None:
-                    releasegroup = self.tagger.get_release_group_by_id(release_group_id)
-                    releasegroup.loaded_albums.add(release_id)
-                    self.tagger.move_file_to_track(self, release_id, recording_id)
+                if trackmatch is None:
+                    statusbar(N_("No matching tracks above the threshold for file '%(filename)s'"))
                 else:
-                    self.tagger.move_file_to_nat(self, recording_id)
+                    statusbar(N_("File '%(filename)s' identified, queuing to flush the whole cluster later"))
+                    cluster.queue(self, lookuptype, trackmatch)
         else:
             statusbar(N_("No matching tracks for file '%(filename)s'"))
 
         self.clear_pending()
+        if cluster is not None:
+            cluster.flush()
+
+    def process_trackmatch(self, lookuptype, trackmatch):
+        (recording_id, release_group_id, release_id, acoustid, node) = trackmatch
+        if lookuptype == File.LOOKUP_ACOUSTID:
+            self.metadata['acoustid_id'] = acoustid
+            self.tagger.acoustidmanager.add(self, recording_id)
+        if release_group_id is not None:
+            releasegroup = self.tagger.get_release_group_by_id(release_group_id)
+            releasegroup.loaded_albums.add(release_id)
+            self.tagger.move_file_to_track(self, release_id, recording_id)
+        else:
+            self.tagger.move_file_to_nat(self, recording_id)
 
     def _match_to_track(self, tracks, threshold=0):
         # multiple matches -- calculate similarities to each of them
         candidates = (
-            self.metadata.compare_to_track(track, self.comparison_weights)
+            self.metadata.compare_to_track(track, self.comparison_weights, self)
             for track in tracks
         )
         no_match = SimMatchTrack(similarity=-1, releasegroup=None, release=None, track=None)

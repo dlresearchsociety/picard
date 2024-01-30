@@ -33,8 +33,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
-
-
+import threading
 from collections import (
     Counter,
     defaultdict,
@@ -49,6 +48,7 @@ from picard.file import File
 from picard.metadata import (
     Metadata,
     SimMatchRelease,
+    SimMatchTrack,
 )
 from picard.util import (
     album_artist_from_path,
@@ -421,6 +421,98 @@ class FileCluster:
     def title(self):
         # Find the most common title
         return self._titles.most_common(1)[0][0]
+
+
+class AnalyzingCluster:
+    """
+    A wrapper that identifies a cluster and keeps track of all AcoustID analyzed.
+    Used for cluster-wide scanning.
+    """
+
+    cluster_lock = threading.Lock()
+
+    def __init__(self, cluster: Cluster):
+        self.capacity = len(cluster)
+        self.pending = len(cluster)
+        self.releases_dict = dict()
+        self.files = list()
+
+    def decrement(self):
+        with self.cluster_lock:
+            self.pending -= 1
+
+    def queue(self, file, lookuptype, trackmatch):
+        with self.cluster_lock:
+            self.files.append((file, lookuptype, trackmatch))
+
+    def flush(self):
+        with self.cluster_lock:
+            if self.pending > 0:
+                # Don't flush until the entire cluster is scanned
+                return
+            release_scores = defaultdict(float)
+            for releases in self.releases_dict.values():
+                for release in releases:
+                    release : SimMatchTrack
+                    if release.release is None:
+                        continue
+                    release_scores[release.release['id']] += release.similarity * release.similarity * (
+                                1 - min(1, abs(1 - release.release['track-count'] / self.capacity)))
+
+            max_matched = -1
+            best_id = None
+            for release_id, release_score in release_scores.items():
+                if release_score > max_matched:
+                    max_matched = release_score
+                    best_id = release_id
+
+            for file, lookuptype, trackmatch in self.files:
+                best_trackmatch = trackmatch
+                if file in self.releases_dict:
+                    for release in self.releases_dict[file]:
+                        if release.release is None or release.release['id'] != best_id:
+                            continue
+                        track_id = release.track['id']
+                        release_group_id, release_id, node = None, None, None
+                        acoustid = release.track.get('acoustid', None)
+
+                        if release.release:
+                            release_group_id = release.releasegroup['id']
+                            release_id = release.release['id']
+                        elif 'title' in release.track:
+                            node = release.track
+                        best_trackmatch = (track_id, release_group_id, release_id, acoustid, node)
+                        break
+                file.process_trackmatch(lookuptype, best_trackmatch)
+                AnalyzingClusterManager.untrack_file(file)
+
+    def cache(self, file, result):
+        with self.cluster_lock:
+            if file not in self.releases_dict:
+                self.releases_dict[file] = list()
+            self.releases_dict[file].append(result)
+
+
+class AnalyzingClusterManager:
+    clusters = dict()
+    manager_lock = threading.Lock()
+
+    @classmethod
+    def track_file(cls, file: File, cluster: AnalyzingCluster):
+        cls.clusters[file] = cluster
+
+    @classmethod
+    def get_cluster(cls, file: File):
+        if file in cls.clusters:
+            return cls.clusters[file]
+        else:
+            return None
+
+    @classmethod
+    def untrack_file(cls, file):
+        with cls.manager_lock:
+            if file in cls.clusters:
+                cls.clusters.pop(file)
 
 
 _re_non_alphanum = re.compile(r'\W', re.UNICODE)

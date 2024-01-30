@@ -87,6 +87,8 @@ from picard.cluster import (
     Cluster,
     ClusterList,
     UnclusteredFiles,
+    AnalyzingCluster,
+    AnalyzingClusterManager,
 )
 from picard.collection import load_user_collections
 from picard.config import (
@@ -1223,10 +1225,25 @@ class Tagger(QtWidgets.QApplication):
         """Analyze the file(s)."""
         if not self.use_acoustid:
             return
-        for file in iter_files_from_objects(objs):
-            if file.can_analyze():
-                file.set_pending()
-                self._acoustid.analyze(file, partial(file._lookup_finished, File.LOOKUP_ACOUSTID))
+        for obj in objs:
+            if isinstance(obj, ClusterList):
+                for cluster in obj:
+                    ac = AnalyzingCluster(cluster)
+                    for file in cluster.iterfiles():
+                        AnalyzingClusterManager.track_file(file, ac)
+                    for file in cluster.iterfiles():
+                        if file.can_analyze():
+                            file.set_pending()
+                            self._acoustid.analyze(file, partial(file._lookup_finished, File.LOOKUP_ACOUSTID))
+            else:
+                if isinstance(obj, Cluster):
+                    ac = AnalyzingCluster(obj)
+                    for file in obj.iterfiles():
+                        AnalyzingClusterManager.track_file(file, ac)
+                for file in iter_files_from_objects([obj]):
+                    if file.can_analyze():
+                        file.set_pending()
+                        self._acoustid.analyze(file, partial(file._lookup_finished, File.LOOKUP_ACOUSTID))
 
     def generate_fingerprints(self, objs):
         """Generate the fingerprints without matching the files."""
